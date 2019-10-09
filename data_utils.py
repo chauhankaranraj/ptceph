@@ -19,7 +19,7 @@ def bb_data_transform(df):
 
     # FIXME: divide by zero error
     if (stds.values==0).any():
-        print('DivideByZeroWarning: std has 0. Dividing will result in nans')
+        # print('DivideByZeroWarning: std has 0. Dividing will result in nans. Replacing with 1\'s')
         stds = stds.replace(to_replace=0, value=1)
     df = df / stds.values
 
@@ -30,7 +30,7 @@ def bb_data_transform(df):
 
 # TODO: decide feat cols and label col
 class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
-    def __init__(self, fpath, feat_cols=None, label_cols=['status'], time_window_size=6, transform=None, target_transform=None):
+    def __init__(self, fpath, feat_cols=None, target_cols=['status'], time_window_size=6, transform=None, target_transform=None):
         super(BackblazeSingleDriveDataset, self).__init__()
 
         # ensure data file exists
@@ -41,11 +41,11 @@ class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
 
         # metadata for processing
         self.feat_cols = feat_cols
-        self.label_cols = label_cols
+        self.target_cols = target_cols
 
         # since it is a single serial file, it should fit in memory
         # FIXME: this is a hack to sort (assumes date column will be available in data)
-        self._df = pd.read_csv(fpath, usecols=['date']+feat_cols+label_cols)
+        self._df = pd.read_csv(fpath, usecols=['date']+feat_cols+target_cols)
         self._df = self._df.sort_values(by='date', ascending=True)
         self._df = self._df.drop('date', axis=1)
 
@@ -62,8 +62,8 @@ class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
             idx_chunk = self._df.iloc[self._curr_idx: self._curr_idx + self.time_window_size, :]
 
             # split data and target
-            data = idx_chunk.drop(self.label_cols, axis=1)
-            target = idx_chunk[self.label_cols].iloc[-1]
+            data = idx_chunk.drop(self.target_cols, axis=1)
+            target = idx_chunk[self.target_cols].iloc[-1]
 
             # transform what is necessary
             if self.transform is not None:

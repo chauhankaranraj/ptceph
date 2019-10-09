@@ -1,5 +1,7 @@
 import os
+from os.path import join as ospj
 import random
+import datetime
 import numpy as np
 import pandas as pd
 
@@ -7,63 +9,60 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from model import LSTMPredictor
+import models
+from models import LSTMtoy
+from arg_parsers import parse_train_args
 from data_utils import BackblazeSingleDriveDataset, bb_data_transform
 
 
-# TODO: add preprocessing for backblaze data
 if __name__ == "__main__":
-    META_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
-    DUMMY_DATA = False
+    # get args
+    args = parse_train_args()
 
-    if DUMMY_DATA:
-        # dummy dataset
-        num_feats = 10
-        num_classes = 2
-        time_window = 2
-        num_serials = 100
+    # cpu or gpu
+    device = torch.device('cuda' if args.use_cuda else 'cpu')
 
-        # random vectors as input
-        train_dataset = []
-        for i in range(num_serials):
-            curr_ts_len = random.randint(time_window, 4*time_window)
-            train_dataset.append(torch.rand(size=(curr_ts_len, num_feats)))
-        targets = torch.randint(num_classes, size=(num_serials,1))
-    else:
-        DATA_ROOT_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/failed'
-        use_cols = list(pd.read_csv(os.path.join(META_DIR, 'means.csv'), header=None)[0]) + ['status']
-        train_serials = ['ZA13Q5GK']
+    # split data into dirs
+    WORK_DIR = ospj(args.data_root_dir, 'working')
+    FAIL_DIR = ospj(args.data_root_dir, 'failed')
+    META_DIR = ospj(args.data_root_dir, 'meta')
 
-        # meta data
-        num_classes = 3
-        time_window = 6
-        num_feats = len(use_cols) - 1
-        num_serials = len(train_serials)
+    # columns used as features and target
+    feat_cols = list(pd.read_csv(ospj(META_DIR, 'means.csv'), header=None)[0])
+    target_col = ['status']
+    train_ser_files = [f for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
 
-        # transforms
-        df_to_tensor = lambda df: torch.Tensor(df.values)
+    # meta data
+    num_classes = 3
+    time_window = 6
+    num_feats = len(feat_cols)
+    num_serials = len(train_ser_files)
 
-        # create by chaining single serial datsets
-        train_dataset = torch.utils.data.ChainDataset(
-            BackblazeSingleDriveDataset(os.path.join(DATA_ROOT_DIR, serial + '.csv'),
-                                        feat_cols=use_cols,
-                                        time_window_size=time_window,
-                                        transform=bb_data_transform,
-                                        target_transform=lambda x: torch.LongTensor(x.values))
-            for serial in train_serials
-        )
+    # transforms. TODO: make this a proper function
+    df_to_tensor = lambda df: torch.Tensor(df.values)
 
-    # training params
-    batch_size = 1
-    num_epochs = 10
-    learning_rate = 0.01
+    # create by chaining single serial datsets
+    train_dataset = torch.utils.data.ChainDataset(
+        BackblazeSingleDriveDataset(ospj(FAIL_DIR, serfile),
+                                    feat_cols=feat_cols,
+                                    target_cols=target_col,
+                                    time_window_size=time_window,
+                                    transform=bb_data_transform,
+                                    target_transform=lambda x: torch.LongTensor(x.values))
+        for serfile in train_ser_files
+    )
 
-    model = LSTMPredictor(num_feats, num_classes)
+    # init model, loss, optimizer
+    model = getattr(models, args.model_arch)(num_feats, num_classes)
+    model = model.to(device)
     loss_function = nn.NLLLoss()
-    optimizer = optim.Adam(model.parameters(), learning_rate)
+    optimizer = optim.Adam(model.parameters(), args.learning_rate)
 
-    for epoch in range(num_epochs):
+    for epoch in range(args.num_epochs):
         for seq, label in train_dataset:
+            # move to train device
+            seq, label = seq.to(device), label.to(device)
+
             # reset for batch
             model.zero_grad()
             optimizer.zero_grad()
@@ -76,3 +75,7 @@ if __name__ == "__main__":
             print("Loss = {:3.5f}".format(loss.item()))
             loss.backward()
             optimizer.step()
+
+    # save the model
+    torch.save(model.state_dict(),
+                ospj(args.save_dir, '{}_{}.pt'.format(model._get_name(), args.timestamp)))
