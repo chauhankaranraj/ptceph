@@ -2,6 +2,8 @@ import os
 from os.path import join as ospj
 import random
 import datetime
+import multiprocessing
+
 import numpy as np
 import pandas as pd
 
@@ -51,6 +53,11 @@ if __name__ == "__main__":
                                     target_transform=lambda x: torch.LongTensor(x.values))
         for serfile in train_ser_files
     )
+    train_loader = torch.utils.data.DataLoader(train_dataset,
+                                                shuffle=False,
+                                                batch_size=args.batch_size,
+                                                num_workers=multiprocessing.cpu_count()
+                                                )
 
     # init model, loss, optimizer
     model = getattr(models, args.model_arch)(num_feats, num_classes)
@@ -59,7 +66,7 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), args.learning_rate)
 
     for epoch in range(args.num_epochs):
-        for seq, label in train_dataset:
+        for batch_idx, (seq, label) in enumerate(train_loader):
             # move to train device
             seq, label = seq.to(device), label.to(device)
 
@@ -68,11 +75,19 @@ if __name__ == "__main__":
             optimizer.zero_grad()
 
             # feed forward
-            log_probs = model(seq.unsqueeze(1))
+            # need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
+            log_probs = model(seq.transpose(0, 1))
 
-            # backprop
-            loss = loss_function(log_probs, label)
-            print("Loss = {:3.5f}".format(loss.item()))
+            # backprop. NOTE: label needs to be (batch) not (batch, 1)
+            loss = loss_function(log_probs, label.squeeze(-1))
+
+            # print output every so intervals
+            if batch_idx % args.log_interval == 0:
+                print('Epoch: {:2d} Batch: {:2d}\tLoss: {:.6f}'.format(
+                        epoch,
+                        batch_idx,
+                        loss.item()))
+
             loss.backward()
             optimizer.step()
 
