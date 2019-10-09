@@ -2,13 +2,35 @@ import os
 import torch
 import pandas as pd
 
-# TODO: STRATEGY:
-# 1. make iterable dataset for single serial number
-# 2. chain the single serial datasets using chaindataset
+
+def bb_data_transform(df):
+    # scale from bytes to gigabyte
+    # FIXME: this is done coz mean centering does not work w/ large numbers
+    df['capacity_bytes'] /= 10**9
+
+    # get metadata for scaling
+    META_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
+    means = pd.read_csv(os.path.join(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
+    stds = pd.read_csv(os.path.join(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
+
+    # 0 mean, 1 std
+    # FIXME: subtract and divide w/out using index else nans
+    df = (df - means.values)
+
+    # FIXME: divide by zero error
+    if (stds.values==0).any():
+        print('DivideByZeroWarning: std has 0. Dividing will result in nans')
+        stds = stds.replace(to_replace=0, value=1)
+    df = df / stds.values
+
+    # to tensor
+    return torch.Tensor(df.values)
+
+
 
 # TODO: decide feat cols and label col
 class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
-    def __init__(self, fpath, feat_cols=None, label_cols=['status'], time_window_size=6, transform=None):
+    def __init__(self, fpath, feat_cols=None, label_cols=['status'], time_window_size=6, transform=None, target_transform=None):
         super(BackblazeSingleDriveDataset, self).__init__()
 
         # ensure data file exists
@@ -32,16 +54,25 @@ class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
 
         # preprocessor
         self.transform = transform
+        self.target_transform = target_transform
 
     def __iter__(self):
         while self._curr_idx < (len(self._df) - self.time_window_size + 1):
             # get current time chunk, transform if available
             idx_chunk = self._df.iloc[self._curr_idx: self._curr_idx + self.time_window_size, :]
+
+            # split data and target
+            data = idx_chunk.drop(self.label_cols, axis=1)
+            target = idx_chunk[self.label_cols].iloc[-1]
+
+            # transform what is necessary
             if self.transform is not None:
-                idx_chunk = self.transform(idx_chunk)
+                data = self.transform(data)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
 
             # return a tuple (X,y) of data and corresponding ground truth
-            yield idx_chunk.drop(self.label_cols, axis=1), idx_chunk[self.label_cols].iloc[-1]
+            yield data, target
 
             # increment for next
             self._curr_idx += 1
