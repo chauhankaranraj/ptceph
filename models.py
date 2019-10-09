@@ -3,13 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LSTMPredictor(nn.Module):
+class LSTMtoy(nn.Module):
     def __init__(self, input_dim, output_dim):
-        super(LSTMPredictor, self).__init__()
+        super(LSTMtoy, self).__init__()
         self.lstm = nn.LSTM(input_dim, 256, 5)
         # self.lstm1 = nn.LSTMCell(1, 51)
         # self.lstm2 = nn.LSTMCell(51, 51)
-        self.linear = nn.Linear(256, 2)
+        self.linear = nn.Linear(256, output_dim)
 
     def forward(self, x):
         output, hidden = self.lstm(x)
