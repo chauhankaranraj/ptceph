@@ -1,7 +1,8 @@
 import os
-from os.path import join as ospj
 import datetime
 import argparse
+import multiprocessing
+from os.path import join as ospj
 
 import torch
 
@@ -40,6 +41,15 @@ def parse_train_args():
         default=torch.cuda.is_available(),
         required=False,
         help="Uses GPU for training if set to 1 else uses cpu (set to 0)"
+    )
+
+    parser.add_argument(
+        "-cc", "--cpu-cores",
+        type=int,
+        default=multiprocessing.cpu_count(),
+        required=False,
+        help="How many CPU cores are to be used as workers for data loading / preprocessing\
+            wherever multicore processing is possible"
     )
 
     parser.add_argument(
