@@ -27,7 +27,7 @@ def append_rul_days_column(drive_data):
 
 def featurize_ts(df, drop_cols=('date', 'failure', 'capacity_bytes', 'rul'), group_cols=('serial_number'), cap=True, num_days=False):
     # TODO: assert drop and group cols have no overlap
-    
+
     # group by serials, drop cols which are not to be aggregated
     grouped_df = df.drop(drop_cols, axis=1).groupby(group_cols)
 
@@ -42,12 +42,12 @@ def featurize_ts(df, drop_cols=('date', 'failure', 'capacity_bytes', 'rul'), gro
 
     # combine features into one df
     feats = means.merge(stds, left_index=True, right_index=True)
-    
+
     # capacity of hard drive
     if cap:
         capacities = df[['serial_number', 'capacity_bytes']].groupby('serial_number').max()
         feats = feats.merge(capacities, left_index=True, right_index=True)
-    
+
     # number of days of observed data available
     if num_days:
         days_per_drive = grouped_df.size().to_frame('num_days')
@@ -103,12 +103,12 @@ def get_downsampled_working_sers(df, num_serials=300, model=None, scaler=None):
 
     # iterate over centers to find the serials that were closest to each center
     working_best_serials = []
-    
+
     # if model was not dask, dd.compute returns tuple of len 1
     cluster_centers = dd.compute(model.cluster_centers_)
     if isinstance(cluster_centers, tuple):
         cluster_centers = cluster_centers[0]
-    
+
     for i, c in enumerate(cluster_centers):
         # all the points that belong to this cluster
         cluster_pts = dd.compute(df.iloc[model.labels_==i])
