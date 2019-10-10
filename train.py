@@ -2,6 +2,7 @@ import os
 from os.path import join as ospj
 import random
 import datetime
+from itertools import chain, cycle
 
 import numpy as np
 import pandas as pd
@@ -37,10 +38,16 @@ if __name__ == "__main__":
     feat_cols = list(pd.read_csv(ospj(META_DIR, 'means.csv'), header=None)[0])
     target_col = ['status']
 
-    # split into train and test files
-    ser_files = [f for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
-    train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.1)
+    # make sure number of files are equal for both
+    failed_ser_files = [f for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
+    working_ser_files = [f for f in os.listdir(WORK_DIR) if os.path.isfile(ospj(WORK_DIR, f))]
+    if len(working_ser_files) > len(failed_ser_files):
+        ser_files = list(chain(*zip(cycle(failed_ser_files), working_ser_files)))
+    else:
+        ser_files = list(chain(*zip(cycle(working_ser_files), failed_ser_files)))
 
+    # split into train and test files
+    train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.1, shuffle=False)
     # meta data
     num_classes = 3
     time_window = 6
