@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 import models
 from models import LSTMtoy
@@ -76,7 +77,7 @@ if __name__ == "__main__":
 
             # feed forward
             # need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
-            log_probs = model(seq.transpose(0, 1))
+            log_probs = F.log_softmax(model(seq.transpose(0, 1)))
 
             # backprop. NOTE: label needs to be (batch) not (batch, 1)
             loss = loss_function(log_probs, label.squeeze(-1))

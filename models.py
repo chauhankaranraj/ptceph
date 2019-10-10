@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class LSTMtoy(nn.Module):
@@ -15,5 +14,5 @@ class LSTMtoy(nn.Module):
         output, hidden = self.lstm(x)
         # take output of last lstm cell for the last time cel
         # and feed to linear layer
-        log_probs = F.log_softmax(self.linear(output[-1, :]))
-        return log_probs
+        logits = self.linear(output[-1, :])
+        return logits
