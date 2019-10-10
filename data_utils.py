@@ -3,28 +3,28 @@ import torch
 import pandas as pd
 
 
-def bb_data_transform(df):
-    # scale from bytes to gigabyte
-    # FIXME: this is done coz mean centering does not work w/ large numbers
-    df['capacity_bytes'] /= 10**9
+# def bb_data_transform(df):
+#     # scale from bytes to gigabyte
+#     # FIXME: this is done coz mean centering does not work w/ large numbers
+#     df['capacity_bytes'] /= 10**9
 
-    # get metadata for scaling
-    META_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
-    means = pd.read_csv(os.path.join(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
-    stds = pd.read_csv(os.path.join(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
+#     # get metadata for scaling
+#     META_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
+#     means = pd.read_csv(os.path.join(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
+#     stds = pd.read_csv(os.path.join(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
 
-    # 0 mean, 1 std
-    # FIXME: subtract and divide w/out using index else nans
-    df = (df - means.values)
+#     # 0 mean, 1 std
+#     # FIXME: subtract and divide w/out using index else nans
+#     df = (df - means.values)
 
-    # FIXME: divide by zero error
-    if (stds.values==0).any():
-        # print('DivideByZeroWarning: std has 0. Dividing will result in nans. Replacing with 1\'s')
-        stds = stds.replace(to_replace=0, value=1)
-    df = df / stds.values
+#     # FIXME: divide by zero error
+#     if (stds.values==0).any():
+#         # print('DivideByZeroWarning: std has 0. Dividing will result in nans. Replacing with 1\'s')
+#         stds = stds.replace(to_replace=0, value=1)
+#     df = df / stds.values
 
-    # to tensor
-    return torch.Tensor(df.values)
+#     # to tensor
+#     return torch.Tensor(df.values)
 
 
 
