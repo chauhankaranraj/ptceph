@@ -39,8 +39,8 @@ if __name__ == "__main__":
     target_col = ['status']
 
     # make sure number of files are equal for both
-    failed_ser_files = [f for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
-    working_ser_files = [f for f in os.listdir(WORK_DIR) if os.path.isfile(ospj(WORK_DIR, f))]
+    failed_ser_files = [ospj(FAIL_DIR, f) for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
+    working_ser_files = [ospj(WORK_DIR, f) for f in os.listdir(WORK_DIR) if os.path.isfile(ospj(WORK_DIR, f))]
     if len(working_ser_files) > len(failed_ser_files):
         ser_files = list(chain(*zip(cycle(failed_ser_files), working_ser_files)))
     else:
@@ -82,7 +82,7 @@ if __name__ == "__main__":
 
     # create by chaining single serial datsets
     train_dataset = torch.utils.data.ChainDataset(
-        BackblazeSingleDriveDataset(ospj(FAIL_DIR, serfile),
+        BackblazeSingleDriveDataset(serfile,
                                     feat_cols=feat_cols,
                                     target_cols=target_col,
                                     time_window_size=time_window,
@@ -91,7 +91,7 @@ if __name__ == "__main__":
         for serfile in train_ser_files
     )
     test_dataset = torch.utils.data.ChainDataset(
-        BackblazeSingleDriveDataset(ospj(FAIL_DIR, serfile),
+        BackblazeSingleDriveDataset(serfile,
                                     feat_cols=feat_cols,
                                     target_cols=target_col,
                                     time_window_size=time_window,
