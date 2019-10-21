@@ -1,11 +1,13 @@
 import os
-from os.path import join as ospj
+import tqdm
 import random
 import datetime
+from os.path import join as ospj
 from itertools import chain, cycle
 
 import numpy as np
 import pandas as pd
+import dask.dataframe as dd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support
 
@@ -48,6 +50,7 @@ if __name__ == "__main__":
 
     # split into train and test files
     train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.1, shuffle=False)
+
     # meta data
     num_classes = 3
     time_window = 6
@@ -110,6 +113,9 @@ if __name__ == "__main__":
                                                 num_workers=args.cpu_cores,
                                                 )
 
+    # for storing predictions and true labels every test iteration
+    num_test_pts = (dd.read_csv(test_ser_files).groupby('serial_number').size() - time_window + 1).sum().compute()
+
     # init model, loss, optimizer
     model = getattr(models, args.model_arch)(num_feats, num_classes)
     model = model.to(device)
@@ -125,8 +131,13 @@ if __name__ == "__main__":
                                                     "val_0"))
         global_step = 0
 
+    # progress bar
+    prog_bar = tqdm.tqdm(enumerate(train_loader))
     for epoch in range(args.num_epochs):
-        for batch_idx, (seq, label) in enumerate(train_loader):
+        for batch_idx, (seq, label) in prog_bar:
+            # udpate progress bar
+            prog_bar.set_description('Batch {:3d}'.format(batch_idx))
+
             # move to train device
             seq, label = seq.to(device), label.to(device)
 
@@ -147,20 +158,19 @@ if __name__ == "__main__":
                 # get train and validation set metrics
                 model.eval()
                 with torch.no_grad():
-                    all_preds = None
-                    all_labels = None
-                    for test_seq, test_label in test_loader:
-                        # need to move to compute device
-                        test_seq = test_seq.to(device)
+                    # create tensors on device to store results
+                    all_test_labels = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
+                    all_test_preds = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
 
-                        # get predictions TODO: remove if-else
-                        if all_preds is None:
-                            all_preds = torch.argmax(model(test_seq.transpose(0, 1)), dim=1)
-                            all_labels = test_label
-                        else:
-                            all_preds = torch.cat((all_preds, torch.argmax(model(test_seq.transpose(0, 1)), dim=1)))
-                            all_labels = torch.cat((all_labels, test_label))
-                    prec, rec, f1, _ = precision_recall_fscore_support(all_preds.cpu(), all_labels, labels=class_labels)
+                    # get test performance
+                    for test_batch_idx, (test_seqs, test_labels) in enumerate(test_loader):
+                        # need to move to compute device
+                        test_seqs = test_seqs.to(device)
+
+                        # save labels and predictions for current batch
+                        all_test_labels[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = test_labels
+                        all_test_preds[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = torch.argmax(model(test_seqs.transpose(0, 1)), dim=1, keepdim=True)
+                    prec, rec, f1, _ = precision_recall_fscore_support(all_test_preds.cpu(), all_test_labels.cpu(), labels=class_labels)
                 model.train()
 
                 # TODO: how to get prec, rec, f1 for train set
