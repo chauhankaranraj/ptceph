@@ -49,7 +49,7 @@ if __name__ == "__main__":
         ser_files = list(chain(*zip(cycle(working_ser_files), failed_ser_files)))
 
     # split into train and test files
-    train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.1, shuffle=False)
+    train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.05, shuffle=False)
 
     # meta data
     num_classes = 3
@@ -112,9 +112,38 @@ if __name__ == "__main__":
                                                 batch_size=args.batch_size,
                                                 num_workers=args.cpu_cores,
                                                 )
+    dss = [BackblazeSingleDriveDataset(serfile,
+                                    feat_cols=feat_cols,
+                                    target_cols=target_col,
+                                    time_window_size=time_window,
+                                    transform=bb_data_transform,
+                                    target_transform=lambda x: torch.LongTensor(x.values))
+        for serfile in test_ser_files]
+    pts = 0
+    for i, s in enumerate(dss):
+        try:
+            pts += len(s)
+        except ValueError:
+            print('----------------------- errrooorr ----------------------')
+            print('serial', test_ser_files[i])
+            breakpoint()
+            print('continuing...')
 
     # for storing predictions and true labels every test iteration
-    num_test_pts = (dd.read_csv(test_ser_files).groupby('serial_number').size() - time_window + 1).sum().compute()
+#     tmp = dd.read_csv(test_ser_files).groupby('serial_number').size().compute()
+#     if (tmp < time_window).any():
+#         print('-----------------------------------problem')
+#     breakpoint()
+#     num_test_pts = (tmp - time_window + 1).sum()#.compute()
+    num_test_pts = 66962
+#     print('======== total test pts = {} ==========='.format(num_test_pts))
+
+    all_test_labels = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
+    for test_batch_idx, (_, test_labels) in enumerate(test_loader):
+        print('idx {:5d} to {:5d}'.format(test_batch_idx*args.batch_size, (test_batch_idx+1)*args.batch_size))
+        print('len = {:3d}'.format(len(test_labels)))
+#         all_test_labels[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = test_labels
+
 
     # init model, loss, optimizer
     model = getattr(models, args.model_arch)(num_feats, num_classes)
@@ -137,6 +166,7 @@ if __name__ == "__main__":
         for batch_idx, (seq, label) in prog_bar:
             # udpate progress bar
             prog_bar.set_description('Batch {:3d}'.format(batch_idx))
+            print('forwarding batch', batch_idx)
 
             # move to train device
             seq, label = seq.to(device), label.to(device)
@@ -155,6 +185,7 @@ if __name__ == "__main__":
 
             # print output every so intervals
             if batch_idx % args.log_interval == 0:
+                print('evaluating')
                 # get train and validation set metrics
                 model.eval()
                 with torch.no_grad():
@@ -164,11 +195,15 @@ if __name__ == "__main__":
 
                     # get test performance
                     for test_batch_idx, (test_seqs, test_labels) in enumerate(test_loader):
+                        print('indices {} to {}'.format(test_batch_idx*args.batch_size, (1+test_batch_idx)*args.batch_size))
                         # need to move to compute device
                         test_seqs = test_seqs.to(device)
 
                         # save labels and predictions for current batch
-                        all_test_labels[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = test_labels
+                        try:
+                            all_test_labels[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = test_labels
+                        except RuntimeError:
+                            breakpoint()
                         all_test_preds[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = torch.argmax(model(test_seqs.transpose(0, 1)), dim=1, keepdim=True)
                     prec, rec, f1, _ = precision_recall_fscore_support(all_test_preds.cpu(), all_test_labels.cpu(), labels=class_labels)
                 model.train()
