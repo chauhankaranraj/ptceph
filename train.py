@@ -195,6 +195,7 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-    # save the model
-    torch.save(model.state_dict(),
-                ospj(args.save_dir, '{}_{}.pt'.format(model._get_name(), args.timestamp)))
+    # save the model only if explicitly told to
+    if args.save_model:
+        torch.save(model.state_dict(),
+                    ospj(args.save_dir, '{}_{}.pt'.format(model._get_name(), args.timestamp)))
