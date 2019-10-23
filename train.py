@@ -1,4 +1,5 @@
 import os
+import json
 import tqdm
 import random
 import datetime
@@ -134,6 +135,11 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), args.learning_rate)
 
     if args.log_summaries:
+        # save training params
+        with open(ospj(args.log_dir, 'args_{}.json'.format(args.timestamp)), 'w') as f:
+            json.dump(vars(args), f)
+
+        # init summary writers
         train_writer = SummaryWriter(log_dir=ospj(args.log_dir,
                                                     '{}_{}'.format(model._get_name(), args.timestamp),
                                                     "train_0"))
