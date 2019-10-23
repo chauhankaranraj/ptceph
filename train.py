@@ -81,7 +81,8 @@ if __name__ == "__main__":
         df = df / stds.values
 
         # to tensor
-        return torch.Tensor(df.values)
+        # NOTE: need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
+        return torch.Tensor(df.values).transpose(0, 1)
 
     # transforms. TODO: make this a proper function
     df_to_tensor = lambda df: torch.Tensor(df.values)
@@ -93,7 +94,7 @@ if __name__ == "__main__":
                                     target_cols=target_col,
                                     time_window_size=time_window,
                                     transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values))
+                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))
         for serfile in train_ser_files
     )
     test_dataset = torch.utils.data.ChainDataset(
@@ -102,7 +103,7 @@ if __name__ == "__main__":
                                     target_cols=target_col,
                                     time_window_size=time_window,
                                     transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values))
+                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))
         for serfile in test_ser_files
     )
     train_loader = torch.utils.data.DataLoader(train_dataset,
@@ -121,6 +122,10 @@ if __name__ == "__main__":
     num_test_pts = 0
     for ser_ds in test_dataset.datasets:
         num_test_pts += len(ser_ds)
+
+    # num_train_pts = 0
+    # for ser_ds in train_dataset.datasets:
+    #     num_train_pts += len(ser_ds)
 
     # init tensor to store labels. init now so that mem is not malloced/freed every iter
     all_test_preds = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
@@ -153,7 +158,7 @@ if __name__ == "__main__":
     for epoch in range(args.num_epochs):
         for batch_idx, (seqs, labels) in prog_bar:
             # udpate progress bar
-            prog_bar.set_description('Batch {:3d}'.format(batch_idx))
+            prog_bar.set_description('Batch {:5d}'.format(batch_idx))
 
             # move to train device
             seqs, labels = seqs.to(device), labels.to(device)
@@ -163,12 +168,11 @@ if __name__ == "__main__":
             optimizer.zero_grad()
 
             # feed forward
-            # need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
-            log_probs = F.log_softmax(model(seqs.transpose(0, 1)), dim=1)
+            log_probs = F.log_softmax(model(seqs), dim=1)
 
             # backprop. NOTE: labels needs to be (batch) not (batch, 1)
             # TODO: move this to transform fn
-            loss = loss_function(log_probs, labels.squeeze(-1))
+            loss = loss_function(log_probs, labels)
 
             # print output every so intervals
             if batch_idx % args.log_interval == 0:
@@ -183,7 +187,7 @@ if __name__ == "__main__":
 
                         # save preds for current batch. NOTE: assumes all test labels are on cpu
                         all_test_preds[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = \
-                            torch.argmax(model(test_seqs.transpose(0, 1)), dim=1, keepdim=True)
+                            torch.argmax(model(test_seqs), dim=1, keepdim=True)
                     prec, rec, f1, _ = precision_recall_fscore_support(all_test_preds.cpu(), all_test_labels, labels=class_labels)
                 model.train()
 
