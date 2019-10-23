@@ -175,10 +175,6 @@ if __name__ == "__main__":
                 # get train and validation set metrics
                 model.eval()
                 with torch.no_grad():
-                    # create tensors on device to store results
-                    all_test_labels = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
-                    all_test_preds = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
-
                     # get test performance
                     test_prog_bar = tqdm.tqdm(enumerate(test_loader))
                     for test_batch_idx, (test_seqs, test_labels) in test_prog_bar:
