@@ -30,6 +30,13 @@ import pandas as pd
 
 # TODO: decide feat cols and label col
 class BackblazeSingleDriveDataset(torch.utils.data.IterableDataset):
+    """
+    Dataset to iterate over data from a serial number, in chunks of time_window days
+
+    This is an IterableDataset because that makes it easier for chaining.
+    If it were a regular Dataset, then random reads would be possible which means
+    each csv file could be read multiple times which can be expensive.
+    """
     def __init__(self, fpath, feat_cols=None, target_cols=['status'], time_window_size=6, transform=None, target_transform=None):
         super(BackblazeSingleDriveDataset, self).__init__()
 
