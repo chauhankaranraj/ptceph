@@ -1,6 +1,10 @@
 import os
+from os.path import join as ospj
+from itertools import chain, cycle
+
 import torch
 import pandas as pd
+from sklearn.model_selection import  train_test_split
 
 
 # def bb_data_transform(df):
@@ -9,9 +13,9 @@ import pandas as pd
 #     df['capacity_bytes'] /= 10**9
 
 #     # get metadata for scaling
-#     META_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
-#     means = pd.read_csv(os.path.join(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
-#     stds = pd.read_csv(os.path.join(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
+#     meta_dir = '/home/kachauha/Downloads/data_Q4_2018_serials/meta'
+#     means = pd.read_csv(os.path.join(meta_dir, 'means.csv'), header=None).set_index(0).transpose()
+#     stds = pd.read_csv(os.path.join(meta_dir, 'stds.csv'), header=None).set_index(0).transpose()
 
 #     # 0 mean, 1 std
 #     # FIXME: subtract and divide w/out using index else nans
@@ -26,6 +30,33 @@ import pandas as pd
 #     # to tensor
 #     return torch.Tensor(df.values)
 
+
+def get_train_test_serials(work_dir, fail_dir, test_size=None, train_size=None):
+    # sanitize inputs
+    if test_size is None:
+        if train_size is None:
+            raise RuntimeError("Specify at least one of train_size or test_size")
+        else:
+            test_size = 1 - train_size
+
+    # get serial numbers in each category
+    failed_ser_files = [ospj(fail_dir, f) for f in os.listdir(fail_dir) if os.path.isfile(ospj(fail_dir, f))]
+    working_ser_files = [ospj(work_dir, f) for f in os.listdir(work_dir) if os.path.isfile(ospj(work_dir, f))]
+
+    # split each set (working, failed) into train and test files
+    working_files_train, working_files_test = train_test_split(working_ser_files, test_size=test_size)
+    failed_files_train, failed_files_test = train_test_split(failed_ser_files, test_size=test_size)
+
+    # oversampling in train set to relax class imbalance somewhat
+    if len(working_files_train) > len(failed_files_train):
+        train_ser_files = list(chain(*zip(cycle(failed_files_train), working_files_train)))
+    else:
+        train_ser_files = list(chain(*zip(cycle(working_files_train), failed_files_train)))
+
+    # dont oversample in test set - this will skew evaluation results
+    test_ser_files = working_files_test + failed_files_test
+
+    return train_ser_files, test_ser_files
 
 
 # TODO: decide feat cols and label col

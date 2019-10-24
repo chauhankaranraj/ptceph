@@ -21,10 +21,10 @@ from torch.utils.tensorboard import SummaryWriter
 import models
 from models import LSTMtoy
 from arg_parsers import parse_train_args
-from data_utils import BackblazeSingleDriveDataset
+from data_utils import BackblazeSingleDriveDataset, get_train_test_serials
 
 
-# TODO: if tranposing on cpu is not intensive, then do that in transform
+# TODO: if tranposing on cpu is expensive, then do that in gpu (not in transform funcs)
 if __name__ == "__main__":
     # get args
     args = parse_train_args()
@@ -38,25 +38,13 @@ if __name__ == "__main__":
     META_DIR = ospj(args.data_root_dir, 'meta')
 
     # columns used as features and target
-    feat_cols = list(pd.read_csv(ospj(META_DIR, 'means.csv'), header=None)[0])
     target_col = ['status']
-
-    # make sure number of files are equal for both
-    failed_ser_files = [ospj(FAIL_DIR, f) for f in os.listdir(FAIL_DIR) if os.path.isfile(ospj(FAIL_DIR, f))]
-    working_ser_files = [ospj(WORK_DIR, f) for f in os.listdir(WORK_DIR) if os.path.isfile(ospj(WORK_DIR, f))]
-    if len(working_ser_files) > len(failed_ser_files):
-        ser_files = list(chain(*zip(cycle(failed_ser_files), working_ser_files)))
-    else:
-        ser_files = list(chain(*zip(cycle(working_ser_files), failed_ser_files)))
-
-    # split into train and test files
-    train_ser_files, test_ser_files = train_test_split(ser_files, test_size=0.1, shuffle=False)
+    feat_cols = list(pd.read_csv(ospj(META_DIR, 'means.csv'), header=None)[0])
 
     # meta data
     num_classes = 3
     time_window = 6
     num_feats = len(feat_cols)
-    num_serials = len(train_ser_files)
     class_labels = [i for i in range(num_classes)]
 
     # TODO: use sklearn stdscaler instead?
@@ -82,10 +70,13 @@ if __name__ == "__main__":
 
         # to tensor
         # NOTE: need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
-        return torch.Tensor(df.values).transpose(0, 1)
+        return torch.Tensor(df.values)
 
     # transforms. TODO: make this a proper function
     df_to_tensor = lambda df: torch.Tensor(df.values)
+
+    # get serial numbers file paths to be used for train and test
+    train_ser_files, test_ser_files = get_train_test_serials(WORK_DIR, FAIL_DIR, test_size=0.1)
 
     # create by chaining single serial datsets
     train_dataset = torch.utils.data.ChainDataset(
@@ -94,7 +85,7 @@ if __name__ == "__main__":
                                     target_cols=target_col,
                                     time_window_size=time_window,
                                     transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))
+                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))    # NOTE: labels needs to be (batch) not (batch, 1)
         for serfile in train_ser_files
     )
     test_dataset = torch.utils.data.ChainDataset(
@@ -103,7 +94,7 @@ if __name__ == "__main__":
                                     target_cols=target_col,
                                     time_window_size=time_window,
                                     transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))
+                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))    # NOTE: labels needs to be (batch) not (batch, 1)
         for serfile in test_ser_files
     )
     train_loader = torch.utils.data.DataLoader(train_dataset,
@@ -168,7 +159,8 @@ if __name__ == "__main__":
             optimizer.zero_grad()
 
             # feed forward
-            log_probs = F.log_softmax(model(seqs), dim=1)
+            # need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
+            log_probs = F.log_softmax(model(seqs.transpose(0, 1)), dim=1)
 
             # backprop. NOTE: labels needs to be (batch) not (batch, 1)
             # TODO: move this to transform fn
@@ -181,13 +173,13 @@ if __name__ == "__main__":
                 with torch.no_grad():
                     # get test performance
                     test_prog_bar = tqdm.tqdm(enumerate(test_loader))
-                    for test_batch_idx, (test_seqs, test_labels) in test_prog_bar:
+                    for test_batch_idx, (test_seqs, _) in test_prog_bar:
                         # need to move to compute device
                         test_seqs = test_seqs.to(device)
 
                         # save preds for current batch. NOTE: assumes all test labels are on cpu
                         all_test_preds[test_batch_idx*args.batch_size: (test_batch_idx+1)*args.batch_size] = \
-                            torch.argmax(model(test_seqs), dim=1, keepdim=True)
+                            torch.argmax(model(test_seqs.transpose(0, 1)), dim=1, keepdim=True)
                     prec, rec, f1, _ = precision_recall_fscore_support(all_test_preds.cpu(), all_test_labels, labels=class_labels)
                 model.train()
 
