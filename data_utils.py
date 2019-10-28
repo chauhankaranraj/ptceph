@@ -130,7 +130,7 @@ class BackblazeSingleDrivePtDataset(torch.utils.data.IterableDataset):
     If it were a regular Dataset, then random reads would be possible which means
     each csv file could be read multiple times which can be expensive.
     """
-    def __init__(self, fpath, feat_cols=None, target_cols=['status'], time_window_size=6, transform=None, target_transform=None):
+    def __init__(self, fpath, time_window_size=6, transform=None, target_transform=None):
         super(BackblazeSingleDrivePtDataset, self).__init__()
 
         # ensure data file exists
@@ -143,16 +143,19 @@ class BackblazeSingleDrivePtDataset(torch.utils.data.IterableDataset):
         self._curr_idx = 0
 
         # load pt as x,y and apply transformations
-        self.X, self.y = transform(None), target_transform(None)
+        self.X, self.y = torch.load(fpath)
 
         # make sure we have labels for all data
         assert len(self.X)==len(self.y)
 
+        # save transformation functions
+        self.transform, self.target_transform = transform, target_transform
+
     def __iter__(self):
         while self._curr_idx < (len(self.X) - self.time_window_size + 1):
             # return current time window chunk and corresponding ground truth
-            yield self.X[self._curr_idx: self._curr_idx + self.time_window_size, ...], \
-                    self.y[self._curr_idx: self._curr_idx + self.time_window_size, ...]
+            yield self.transform(self.X[self._curr_idx: self._curr_idx + self.time_window_size, ...]), \
+                    self.target_transform(self.y[self._curr_idx: self._curr_idx + self.time_window_size, ...])
 
             # increment for next
             self._curr_idx += 1
@@ -190,6 +193,8 @@ if __name__ == "__main__":
         serdf = serdf.drop('date', axis=1)
 
         # convert to tensor and save
+        # FIXME: save as torch tensor and not numpy array
+        # FIXME: dont save columns that have 0 std
         torch.save(obj=(serdf[feat_cols].values, serdf[target_cols].values), \
                     f=ospj(SAVE_ROOT_DIR, subfolder, ser+'.pt'))
 

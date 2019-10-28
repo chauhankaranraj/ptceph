@@ -1,6 +1,5 @@
 import os
 import json
-import tqdm
 import random
 import datetime
 from os.path import join as ospj
@@ -21,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 import models
 from models import LSTMtoy
 from arg_parsers import parse_train_args
-from data_utils import BackblazeSingleDriveDataset, get_train_test_serials
+from data_utils import BackblazeSingleDrivePtDataset, get_train_test_serials
 
 
 # TODO: if tranposing on cpu is expensive, then do that in gpu (not in transform funcs)
@@ -37,65 +36,40 @@ if __name__ == "__main__":
     FAIL_DIR = ospj(args.data_root_dir, 'failed')
     META_DIR = ospj(args.data_root_dir, 'meta')
 
-    # columns used as features and target
-    target_col = ['status']
-    feat_cols = list(pd.read_csv(ospj(META_DIR, 'means.csv'), header=None)[0])
+    # get metadata for scaling - moved this outside fn so that it's not read again and again
+    means = torch.load(ospj(META_DIR, 'means.pt'))
+    stds = torch.load(ospj(META_DIR, 'stds.pt'))
+    # FIXME: this should not be needed. just drop cols where std==0
+    stds[stds==0] = 1
+
+    # transforms on raw data
+    # NOTE: labels needs to be (batch) not (batch, 1). keep only last day data
+    data_transform = lambda x: torch.as_tensor((x - means) / stds, dtype=torch.float32)
+    label_transform = lambda x: torch.as_tensor(x[-1,...], dtype=torch.int64).squeeze(-1)
 
     # meta data
     num_classes = 3
     time_window = 6
-    num_feats = len(feat_cols)
+    num_feats = means.shape[-1]
     class_labels = [i for i in range(num_classes)]
-
-    # TODO: use sklearn stdscaler instead?
-
-    # get metadata for scaling - moved this outside fn so that it's not read again and again
-    means = pd.read_csv(ospj(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
-    stds = pd.read_csv(ospj(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
-    def bb_data_transform(df):
-        global means, stds
-        # scale from bytes to gigabyte
-        # FIXME: this is done coz mean centering does not work w/ large numbers
-        df['capacity_bytes'] /= 10**9
-
-        # 0 mean, 1 std
-        # FIXME: subtract and divide w/out using index else nans
-        df = (df - means.values)
-
-        # FIXME: divide by zero error
-        if (stds.values==0).any():
-            # print('DivideByZeroWarning: std has 0. Dividing will result in nans. Replacing with 1\'s')
-            stds = stds.replace(to_replace=0, value=1)
-        df = df / stds.values
-
-        # to tensor
-        # NOTE: need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
-        return torch.Tensor(df.values)
-
-    # transforms. TODO: make this a proper function
-    df_to_tensor = lambda df: torch.Tensor(df.values)
 
     # get serial numbers file paths to be used for train and test
     train_ser_files, test_ser_files = get_train_test_serials(WORK_DIR, FAIL_DIR, test_size=0.1)
 
     # create by chaining single serial datsets
     train_dataset = torch.utils.data.ChainDataset(
-        BackblazeSingleDriveDataset(serfile,
-                                    feat_cols=feat_cols,
-                                    target_cols=target_col,
+        BackblazeSingleDrivePtDataset(serfile,
                                     time_window_size=time_window,
-                                    transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))    # NOTE: labels needs to be (batch) not (batch, 1)
-        for serfile in train_ser_files
+                                    transform=data_transform,
+                                    target_transform=label_transform)
+        for serfile in train_ser_files[:9]
     )
     test_dataset = torch.utils.data.ChainDataset(
-        BackblazeSingleDriveDataset(serfile,
-                                    feat_cols=feat_cols,
-                                    target_cols=target_col,
+        BackblazeSingleDrivePtDataset(serfile,
                                     time_window_size=time_window,
-                                    transform=bb_data_transform,
-                                    target_transform=lambda x: torch.LongTensor(x.values).squeeze(-1))    # NOTE: labels needs to be (batch) not (batch, 1)
-        for serfile in test_ser_files
+                                    transform=data_transform,
+                                    target_transform=label_transform)
+        for serfile in test_ser_files[:1]
     )
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                 shuffle=False,
@@ -113,10 +87,6 @@ if __name__ == "__main__":
     num_test_pts = 0
     for ser_ds in test_dataset.datasets:
         num_test_pts += len(ser_ds)
-
-    # num_train_pts = 0
-    # for ser_ds in train_dataset.datasets:
-    #     num_train_pts += len(ser_ds)
 
     # init tensor to store labels. init now so that mem is not malloced/freed every iter
     all_test_preds = torch.empty(size=(num_test_pts, 1), device=device, dtype=torch.int64)
@@ -144,12 +114,10 @@ if __name__ == "__main__":
                                                     "val_0"))
         global_step = 0
 
-    # progress bar
-    prog_bar = tqdm.tqdm(enumerate(train_loader))
     for epoch in range(args.num_epochs):
-        for batch_idx, (seqs, labels) in prog_bar:
+        for batch_idx, (seqs, labels) in enumerate(train_loader):
             # udpate progress bar
-            prog_bar.set_description('Batch {:5d}'.format(batch_idx))
+            print("Epoch {:2d} Batch {:6d}".format(epoch, batch_idx), end='\r')
 
             # move to train device
             seqs, labels = seqs.to(device), labels.to(device)
@@ -171,9 +139,9 @@ if __name__ == "__main__":
                 # get train and validation set metrics
                 model.eval()
                 with torch.no_grad():
-                    # get test performance
-                    test_prog_bar = tqdm.tqdm(enumerate(test_loader))
-                    for test_batch_idx, (test_seqs, _) in test_prog_bar:
+                    for test_batch_idx, (test_seqs, _) in enumerate(test_loader):
+                        print("Batch {:6d} / {:6d}".format(test_batch_idx, num_test_pts//args.batch_size), end='\r')
+
                         # need to move to compute device
                         test_seqs = test_seqs.to(device)
 
@@ -193,7 +161,7 @@ if __name__ == "__main__":
                         val_writer.add_scalar('confmat/f1_score_{}'.format(i), f1[i], global_step)
                     global_step += 1
 
-                print('Epoch: {:2d} Batch: {:2d}\tLoss: {:.6f} Prec={:.2f}, {:.2f}, {:.2f} Rec={:.2f}, {:.2f}, {:.2f} F1={:.2f}, {:.2f}, {:.2f}'.format(
+                print('Epoch: {:2d} Batch: {:6d}\tLoss: {:.6f} Prec={:.2f}, {:.2f}, {:.2f} Rec={:.2f}, {:.2f}, {:.2f} F1={:.2f}, {:.2f}, {:.2f}'.format(
                         epoch,
                         batch_idx,
                         loss.item(),

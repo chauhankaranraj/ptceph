@@ -129,7 +129,7 @@ def parse_train_args():
     )
 
     # if the default dir does not exist, create it
-    DEFAULT_DATA_ROOT_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials'
+    DEFAULT_DATA_ROOT_DIR = '/home/kachauha/Downloads/data_Q4_2018_serials_pt'
     if not os.path.exists(DEFAULT_DATA_ROOT_DIR):
         print('WARNING: default data root dir path does not exist. must be passed as cmd line arg')
 
