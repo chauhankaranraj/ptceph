@@ -62,14 +62,14 @@ if __name__ == "__main__":
                                     time_window_size=time_window,
                                     transform=data_transform,
                                     target_transform=label_transform)
-        for serfile in train_ser_files[:9]
+        for serfile in train_ser_files
     )
     test_dataset = torch.utils.data.ChainDataset(
         BackblazeSingleDrivePtDataset(serfile,
                                     time_window_size=time_window,
                                     transform=data_transform,
                                     target_transform=label_transform)
-        for serfile in test_ser_files[:1]
+        for serfile in test_ser_files
     )
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                 shuffle=False,
