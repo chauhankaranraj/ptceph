@@ -193,4 +193,20 @@ if __name__ == "__main__":
         torch.save(obj=(serdf[feat_cols].values, serdf[target_cols].values), \
                     f=ospj(SAVE_ROOT_DIR, subfolder, ser+'.pt'))
 
-    _ = Parallel(n_jobs=-1, prefer='threads')(delayed(save_ser)(ser_fpath) for ser_fpath in all_ser_files)
+    def save_meta(ser_fpath):
+        # decompose file path
+        fparts = ser_fpath.split('/')
+        subfolder = fparts[-2]
+        ser = fparts[-1].split('.')[0]
+
+        serdf = pd.read_csv(ser_fpath, header=None).set_index(0).transpose()
+
+        # convert to tensor and save
+        torch.save(obj=serdf.values, f=ospj(SAVE_ROOT_DIR, subfolder, ser+'.pt'))
+
+    # for saving failed and working drives
+    # _ = Parallel(n_jobs=-1, prefer='threads')(delayed(save_ser)(ser_fpath) for ser_fpath in all_ser_files)
+
+    # for saving mean, std
+    meta_fpaths = [i for i in all_ser_files if 'meta' in i]
+    _ = Parallel(n_jobs=-1, prefer='threads')(delayed(save_meta)(ser_fpath) for ser_fpath in meta_fpaths)
