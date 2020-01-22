@@ -1,13 +1,42 @@
-import datetime
-import cloudpickle
+import os
+from glob import glob as gg
+from os.path import join as ospj
+from itertools import chain, cycle
+from joblib import Parallel, delayed
 
+import torch
 import numpy as np
 import scipy as sp
 import pandas as pd
 import dask.dataframe as dd
 
+from sklearn.model_selection import  train_test_split
 from sklearn.preprocessing import RobustScaler
 from sklearn.cluster import KMeans
+
+
+# # get metadata for scaling - moved this outside fn so that it's not read again and again
+# means = pd.read_csv(ospj(META_DIR, 'means.csv'), header=None).set_index(0).transpose()
+# stds = pd.read_csv(ospj(META_DIR, 'stds.csv'), header=None).set_index(0).transpose()
+# def bb_data_transform(df):
+#     global means, stds
+#     # scale from bytes to gigabyte
+#     # FIXME: this is done coz mean centering does not work w/ large numbers
+#     df['capacity_bytes'] /= 10**9
+
+#     # 0 mean, 1 std
+#     # FIXME: subtract and divide w/out using index else nans
+#     df = (df - means.values)
+
+#     # FIXME: divide by zero error
+#     if (stds.values==0).any():
+#         # print('DivideByZeroWarning: std has 0. Dividing will result in nans. Replacing with 1\'s')
+#         stds = stds.replace(to_replace=0, value=1)
+#     df = df / stds.values
+
+#     # to tensor
+#     # NOTE: need to make (seq_len, batch, input_size) from (batch, seq_len, input_size)
+#     return torch.Tensor(df.values)
 
 
 def append_rul_days_column(drive_data):
@@ -25,35 +54,60 @@ def append_rul_days_column(drive_data):
     return drive_data.assign(rul_days=drive_data['date'].max()-drive_data['date'])
 
 
-def featurize_ts(df, drop_cols=('date', 'failure', 'capacity_bytes', 'rul'), group_cols=('serial_number'), cap=True, num_days=False):
-    # TODO: assert drop and group cols have no overlap
+def rolling_featurize(df, window=6, drop_cols=('date', 'failure', 'capacity_bytes', 'rul'), group_cols=('serial_number'), cap=True):
+    """
+    Extracts 6-day rolling features (6-day mean, std, coefficient of variation) from raw data
+    in a pandas dataframe
+    """
+    # save the status labels
+    # FIXME: if this is not a df, then earlier versions of pandas (0.19) complains
+    statuses = df[['status']]
 
     # group by serials, drop cols which are not to be aggregated
-    grouped_df = df.drop(drop_cols, axis=1).groupby(group_cols)
+    if drop_cols is not None:
+        grouped_df = df.drop(drop_cols, axis=1).groupby(group_cols)
+    else:
+        grouped_df = df.groupby(group_cols)
 
-    # vanilla mean values of features across time
-    means = grouped_df.mean()
+    # feature columns
+    featcols = grouped_df.first().columns
+
+    # get mean value in last 6 days
+    means = grouped_df.rolling(window)[featcols].mean()
+
+    # get std in last 6 days
+    stds = grouped_df.rolling(window)[featcols].std()
+
+    # coefficient of variation
+    cvs = stds.divide(means, fill_value=0)
+
+    # rename before mergeing
     means = means.rename(columns={col: 'mean_' + col for col in means.columns})
-
-    # vanilla std values of features across time
-    stds = grouped_df.std(ddof=0)
     stds = stds.rename(columns={col: 'std_' + col for col in stds.columns})
-    stds = stds.fillna(0)    # FIXME: std returns nans even for ddof=0
+    cvs = cvs.rename(columns={col: 'cv_' + col for col in cvs.columns})
 
     # combine features into one df
-    feats = means.merge(stds, left_index=True, right_index=True)
+    res = means.merge(stds, left_index=True, right_index=True)
+    res = res.merge(cvs, left_index=True, right_index=True)
+
+    # drop rows where all columns are nans
+    res = res.dropna(how='all')
+
+    # fill nans created by cv calculation
+    res = res.fillna(0)
 
     # capacity of hard drive
     if cap:
         capacities = df[['serial_number', 'capacity_bytes']].groupby('serial_number').max()
-        feats = feats.merge(capacities, left_index=True, right_index=True)
+        res = res.merge(capacities, left_index=True, right_index=True)
 
-    # number of days of observed data available
-    if num_days:
-        days_per_drive = grouped_df.size().to_frame('num_days')
-        feats = feats.merge(days_per_drive, left_index=True, right_index=True)
+    # bring serial number back as a col instead of index, preserve the corresponding indices
+    res = res.reset_index(level=[0])
 
-    return feats
+    # add status labels back.
+    res = res.merge(statuses, left_index=True, right_index=True)
+
+    return res
 
 
 def get_drive_data_from_json(fnames, serial_numbers):
@@ -122,6 +176,137 @@ def get_downsampled_working_sers(df, num_serials=300, model=None, scaler=None):
     return working_best_serials
 
 
+def get_train_test_serials(work_dir, fail_dir, test_size=None, train_size=None, oversample=True):
+    """Splits serial numbers into train set and test set
+
+    Arguments:
+        work_dir {str} -- path to dir where working serials csv's are stored
+        fail_dir {str} -- path to dir where failed serials csv's are stored
+
+    Keyword Arguments:
+        test_size {float} -- fraction of serials to use for testing. At least one of
+                             train_size or test_size must be specified (default: {None})
+        train_size {float} -- fraction of serials to use for training. At least one of
+                             train_size or test_size must be specified (default: {None})
+        oversample {bool} -- if True, chains non-abundant-class serials in cycles till
+                             the length of lists of both class serials is equal (default: {True})
+
+    Raises:
+        RuntimeError: if neither train_size nor test_size is specified
+
+    Returns:
+        (list, list) -- tuple of train_serials list, test_serials list
+    """
+    # sanitize inputs
+    if test_size is None:
+        if train_size is None:
+            raise RuntimeError("Specify at least one of train_size or test_size")
+        else:
+            test_size = 1 - train_size
+
+    # get serial numbers in each category
+    failed_ser_files = [ospj(fail_dir, f) for f in os.listdir(fail_dir) if os.path.isfile(ospj(fail_dir, f))]
+    working_ser_files = [ospj(work_dir, f) for f in os.listdir(work_dir) if os.path.isfile(ospj(work_dir, f))]
+
+    # split each set (working, failed) into train and test files
+    working_files_train, working_files_test = train_test_split(working_ser_files, test_size=test_size)
+    failed_files_train, failed_files_test = train_test_split(failed_ser_files, test_size=test_size)
+
+    if oversample:
+        # oversampling in train set to relax class imbalance somewhat
+        if len(working_files_train) > len(failed_files_train):
+            train_ser_files = list(chain(*zip(cycle(failed_files_train), working_files_train)))
+        else:
+            train_ser_files = list(chain(*zip(cycle(working_files_train), failed_files_train)))
+    else:
+        train_ser_files = working_files_train + failed_files_train
+
+    # dont oversample in test set - this will skew evaluation results
+    test_ser_files = working_files_test + failed_files_test
+
+    return train_ser_files, test_ser_files
+
+
+def serials_dataset_csv2pt(root_dir=None, meta_dir=None, save_root_dir=None):
+    """Converts Backblaze dataset stored by serials (one csv per serial) from
+    csv format to pt format for better read performance with pytorch
+
+    Assumes this structure of serials dataset
+    -- data_root_dir
+      |-- failed
+      |---- ST03523.csv, etc
+      |-- working
+      |---- WR1165.csv, etc
+
+    Assumes this structure of serials dataset metadata
+    -- meta_dir
+      |-- means.csv
+      |-- stds.csv
+
+    NOTE: meta_dir can be inside data_root_dir too
+
+    Keyword Arguments:
+        root_dir {str} -- path to serials dataset (default: {None})
+        meta_dir {str} -- path to metadata of serials dataset (default: {None})
+        save_root_dir {str} -- path where pt format serials dataset is to be stored (default: {None})
+    """
+    # data location
+    if root_dir is None:
+        root_dir = '/home/kachauha/Downloads/data_Q4_2018_serials'
+
+    # means, stds of data (for normalization)
+    if meta_dir is None:
+        meta_dir = ospj(root_dir, 'meta')
+
+    # dir where the '.pt' dataset is to be stored
+    # same name as root dir but suffixed with _pt
+    if save_root_dir is None:
+        save_root_dir = root_dir + '_pt'
+
+    # get data from all dirs
+    all_ser_files = [f for f in gg(ospj(root_dir, '**/*.csv')) if os.path.isfile(f)]
+
+    # columns used as features and target
+    target_cols = ['status']
+    feat_cols = list(pd.read_csv(ospj(meta_dir, 'means.csv'), header=None)[0])
+
+    # for ser_fpath in all_ser_files:
+    def save_ser(ser_fpath):
+        # decompose file path
+        fparts = ser_fpath.split('/')
+        subfolder = fparts[-2]
+        ser = fparts[-1].split('.')[0]
+
+        # load dataframe
+        serdf = pd.read_csv(ser_fpath, usecols = ['date'] + feat_cols + target_cols)
+        serdf = serdf.sort_values(by='date', ascending=True)
+        serdf = serdf.drop('date', axis=1)
+
+        # convert to tensor and save
+        # FIXME: save as torch tensor and not numpy array
+        # FIXME: dont save columns that have 0 std
+        torch.save(obj=(serdf[feat_cols].values, serdf[target_cols].values), \
+                    f=ospj(save_root_dir, subfolder, ser+'.pt'))
+
+    def save_meta(ser_fpath):
+        # decompose file path
+        fparts = ser_fpath.split('/')
+        subfolder = fparts[-2]
+        ser = fparts[-1].split('.')[0]
+
+        serdf = pd.read_csv(ser_fpath, header=None).set_index(0).transpose()
+
+        # convert to tensor and save
+        torch.save(obj=serdf.values, f=ospj(save_root_dir, subfolder, ser+'.pt'))
+
+    # for saving failed and working drives
+    _ = Parallel(n_jobs=-1, prefer='threads')(delayed(save_ser)(ser_fpath) for ser_fpath in all_ser_files)
+
+    # for saving mean, std
+    meta_fpaths = [i for i in all_ser_files if 'meta' in i]
+    _ = Parallel(n_jobs=-1, prefer='threads')(delayed(save_meta)(ser_fpath) for ser_fpath in meta_fpaths)
+
+
 def get_nan_count_percent(df, divisor=None):
     """Calculates the number of nan values per column,
         both as an absolute amount and as a percentage of some pre-defined "total" amount
@@ -158,27 +343,6 @@ def get_nan_count_percent(df, divisor=None):
     return ret_df
 
 
-def get_vendor(model_name):
-    """Returns the vendor/manufacturer name for a given hard drive model name
-
-    Arguments:
-        model_name {str} -- model name of the hard drive
-
-    Returns:
-        str -- vendor name
-    """
-    if model_name.startswith("W"):
-        return "WDC"
-    elif model_name.startswith("T"):
-        return "Toshiba"
-    elif model_name.startswith("S"):
-        return "Seagate"
-    elif model_name.startswith("Hi"):
-        return "Hitachi"
-    else:
-        return "HGST"
-
-
 def optimal_repartition_df(df, partition_size_bytes=None):
     # ideal partition size as recommended in dask docs
     if partition_size_bytes is None:
@@ -190,37 +354,3 @@ def optimal_repartition_df(df, partition_size_bytes=None):
 
     # repartition
     return df.repartition(npartitions=num_partitions)
-
-
-def save_model(model, fname, suffix=None):
-    """Serialize and save a dask or sklearn model
-
-    Arguments:
-        model {dask_ml or sklearn object} -- trained model to save
-        fname {str} -- name of file to write to. saved in the current dir
-                        if path-like name is not provided
-
-    Keyword Arguments:
-        suffix {str} -- suffix in the filename (default: {None})
-                        This serves as the identifier of the current
-                        state of the model
-                        If not provided, the current timestamp is used
-    """
-    # generate default suffix if needed
-    if suffix is None:
-        suffix = datetime.datetime.now().strftime("%b_%d_%Y_%H_%M_%S")
-
-    # serialize and write
-    with open(fname + '_' + suffix + '.cpkl', 'wb') as f:
-        cloudpickle.dump(model, f)
-
-
-def load_model(fname):
-    """Deserializes and loads a dask or sklearn model
-
-    Arguments:
-        fname {str} -- path or filename (in current dir) of serialized model
-    """
-    with open(fname, 'rb') as f:
-        model = cloudpickle.load(f)
-    return model

@@ -19,7 +19,8 @@ from torch.utils.tensorboard import SummaryWriter
 import models
 from models import LSTMtoy
 from arg_parsers import parse_train_args
-from datasets import BackblazeSingleDrivePtDataset, get_train_test_serials
+from utils import get_train_test_serials
+from datasets import BackblazeSingleDrivePtDataset
 
 
 # TODO: add weighted loss
